@@ -527,7 +527,7 @@ p1 <- ggplot(vaginal_rel_metadata_hbc_df_matched,
   labs(title = "Stress Score Over Time", x = "Study Day", y = "Stress Score", color = "Birth Control") +
   theme_minimal()
 
-p2 <- ggplot(vaginal_rel_metadata_hbc_df, 
+p2 <- ggplot(vaginal_rel_metadata_hbc_df_matched, 
              aes(x = study_day, y = CA_abund, color = birthControl)) +
   geom_point(alpha = 0.4, size = 1) +
   geom_smooth(se = FALSE, method = "loess", size = 0.5) +
@@ -538,6 +538,36 @@ p2 <- ggplot(vaginal_rel_metadata_hbc_df,
 p1 / p2 
 ###################################################################################################################
 
+#Shannon diversity and stress score over time by HBC
+
+p3 <- ggplot(vaginal_rel_metadata_hbc_df_matched, 
+             aes(x = study_day, y = stress_score, color = birthControl)) +
+  geom_point(alpha = 0.4, size = 1) +
+  geom_smooth(se = FALSE, method = "loess", size = 0.5) +
+  scale_color_manual(values = hbc_cols) +
+  labs(title = "Stress Score Over Time", x = "Study Day", y = "Stress Score", color = "Birth Control") +
+  theme_minimal()
+
+p4 <- ggplot(vaginal_rel_metadata_hbc_df_matched, 
+             aes(x = study_day, y = Shannon, color = birthControl)) +
+  geom_point(alpha = 0.4, size = 1) +
+  geom_smooth(se = FALSE, method = "loess", size = 0.5) +
+  scale_color_manual(values = hbc_cols) +
+  labs(title = "Shannon Diversity Over Time", x = "Study Day", y = "Shannon Diversity", color = "Birth Control") +
+  theme_minimal()
+
+p3 / p4
+###################################################################################################################
+
+#
+m_stress_hbc_day <- lmer(stress_score ~ birthControl + study_day + (1 | biome_id),
+                         data = vaginal_rel_metadata_hbc_df_matched)
+summary(m_stress_hbc_day)
+
+aov_stress <- aov(stress_score ~ birthControl, data = vaginal_rel_metadata_hbc_df_matched)
+summary(aov_stress)
+
+###################################################################################################################
 #C. albicans rel. abundance by stress severity and HBC
 vaginal_rel_metadata_hbc_df_matched$stress_severity <- factor(
   vaginal_rel_metadata_hbc_df_matched$stress_severity,
@@ -591,3 +621,41 @@ ggplot(df_plot, aes(x = stress_severity, y = Shannon, fill = birthControl)) +
 
 ###################################################################################################################
 
+ggplot(vaginal_rel_metadata_hbc_df_matched, aes(x = stress_score, y = Shannon, color = birthControl)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = FALSE) +
+  facet_wrap(~ birthControl) +
+  scale_color_manual(name = "Birth Control", values = hbc_cols) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Shannon Diversity vs. Stress Score by Birth Control Type",
+    x = "Stress Score",
+    y = "Shannon Diversity"
+  ) +
+  theme(
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "right"
+  )
+
+ggplot(vaginal_rel_metadata_hbc_df_matched, aes(x = stress_score, y = CA_abund, color = birthControl)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = FALSE) +
+  facet_wrap(~ birthControl) +
+  scale_color_manual(name = "Birth Control", values = hbc_cols) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "C. albicans Relative Abundance vs. Stress Score by Birth Control Type",
+    x = "Stress Score",
+    y = "C. albicans Relative Abundance"
+  ) +
+  theme(
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "right"
+  )
+
+sum(is.na(vaginal_rel_metadata_hbc_df_matched$stress_score))
+table(vaginal_rel_metadata_hbc_df_matched$birthControl)
