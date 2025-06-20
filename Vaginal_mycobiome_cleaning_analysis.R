@@ -656,6 +656,3 @@ ggplot(vaginal_rel_metadata_hbc_df_matched, aes(x = stress_score, y = CA_abund, 
     axis.text.x = element_text(angle = 0, hjust = 0.5),
     legend.position = "right"
   )
-
-sum(is.na(vaginal_rel_metadata_hbc_df_matched$stress_score))
-table(vaginal_rel_metadata_hbc_df_matched$birthControl)
