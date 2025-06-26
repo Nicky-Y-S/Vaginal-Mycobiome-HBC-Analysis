@@ -366,31 +366,32 @@ p_hbc <- ggplot(vaginal_rel_df_matched, aes(x = study_day, y = CA_abund_limited,
 ###################################################################################################################
 
 #C. albicans rel. abundance overtime by athlete status (w/ detection limit)
-athlete_cols <- c("0" = "#D73027", "1" = "#1A9850")
+athlete_cols <- c("0" = "#D36FA4", "1" = "#1A9850")
 
-p_ath <- ggplot(vaginal_rel_df_matched,
-       aes(x = study_day,
-           y = CA_abund_limited,
-           colour = factor(athlete, exclude = NULL))) +   
-  geom_point(size = 1, alpha = 0.55) +
+p_ath <- ggplot(
+  vaginal_rel_df_matched,
+  aes(study_day, CA_abund_limited,
+      colour = factor(athlete, exclude = NULL))
+) +
+  geom_point(alpha = 0.40, size = 1) +
   geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_color_manual(values  = athlete_cols,
-                     breaks  = c("0", "1"),
-                     labels  = c("Non-athlete", "Athlete"),
-                     name    = "Athlete Status",
-                     na.translate = TRUE,      
-                     na.value     = na_col) +  
+  scale_colour_manual(
+    values  = athlete_cols,
+    breaks  = c("0", "1"),
+    labels  = c("Non-athlete", "Athlete"),
+    name    = "Athlete Status",
+    na.translate = TRUE,
+    na.value     = na_col
+  ) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time\nby Athlete Status (Detection Limit Applied)",
-    x = "Study Day",
-    y = "Relative Abundance of C. albicans"
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Athlete Status (Detection Limit Applied)",
+    x     = "Study Day",
+    y     = "Relative Abundance of C. albicans"
   ) +
-  theme_minimal(base_size = 14) +
-  theme(panel.grid.major.x = element_blank(),
-        panel.grid.minor   = element_blank(),
-        panel.grid.major.y = element_line(colour = "grey90", size = 0.5),
-        legend.position    = "right")
+  theme_minimal()
+
+print(p_ath)
 
 #C. albicans rel. abundance and athlete mixed effect quadratic model
 vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
@@ -431,20 +432,27 @@ ggplot(vaginal_rel_df_matched,
 ###################################################################################################################
 
 #C. albicans rel. abundance overtime by field hockey category (w/ detection limit)
-fh_cols <- c("None" = "#B0B0B0", "Other" = "#FB8072", "Field Hockey" = "#8DD3C7")
+fh_cols <- c("None" = "#B0B0B0", "Other" = "#FDD95E", "Field Hockey" = "#8DD3C7")
 
-p_fh <- ggplot(vaginal_rel_df_matched,
-       aes(study_day, CA_abund_limited, colour = field_hockey)) +   
-  geom_point(alpha = 0.55, size = 1) +
+p_fh <- ggplot(
+  vaginal_rel_df_matched,
+  aes(study_day, CA_abund_limited, colour = field_hockey)
+) +
+  geom_point(alpha = 0.40, size = 1) +
   geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_colour_manual(values = fh_cols, name = "Sport Group") +
+  scale_colour_manual(
+    values = fh_cols,
+    name   = "Sport Group"
+  ) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time\nNone vs. Other Sports vs. Field Hockey",
-    x = "Study Day",
-    y = "Relative Abundance"
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time\nNone vs. Other Sports vs. Field Hockey (Detection Limit Applied)",
+    x     = "Study Day",
+    y     = "Relative Abundance of C. albicans"
   ) +
-  theme_minimal(base_size = 14)
+  theme_minimal()
+
+print(p_fh)
 
 #C. albicans rel. abundance and field hockey mixed effect quadratic model
 m_rel_FH_quad <- lmer(CA_abund_limited ~ field_hockey + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
