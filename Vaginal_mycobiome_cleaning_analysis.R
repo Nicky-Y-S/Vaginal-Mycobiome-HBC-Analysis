@@ -18,7 +18,8 @@ library(lme4)
 library(lmerTest)
 library(patchwork)
 library(tidyr)
-library(ggrepel)          
+library(ggrepel)         
+library(MuMIn)
 
 getwd()
 setwd("/Users/yiningsun/Desktop/Tetel Lab")
@@ -164,12 +165,12 @@ vaginal_tax_tab <- vaginal_tax_tab %>%
     Species_full = case_when(
       !is.na(Genus)   & Genus   != "" &
         !is.na(Species) & Species != "" &
-        str_starts(Species, paste0(Genus, "_")) &        # begins with the genus
-        !str_ends(Species, "_sp")                        # and does NOT end in _sp
+        str_starts(Species, paste0(Genus, "_")) &       
+        !str_ends(Species, "_sp")                        
       ~ Species,
             !is.na(Genus)   & Genus   != "" &
         !is.na(Species) & Species != "" &
-        !str_ends(Species, "_sp")                        # exclude Genus_sp
+        !str_ends(Species, "_sp")           
       ~ paste0(Genus, "_", Species),
       TRUE ~ "Unknown"
     )
@@ -226,7 +227,7 @@ vaginal_rel_metadata_df$status <- NULL
 
 ###################################################################################################################
 
-#DATA CLEANING
+#DATA CLEANING & MERGING
 
 #medication cleaning
 med_df <- read.csv("cleaned_Report 9-Volunteer Medical History.csv",
@@ -243,17 +244,11 @@ vaginal_rel_df_matched <- vaginal_rel_metadata_df %>%
     by = "biome_id"
   )
 
-vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
-  filter(!is.na(birthControl))
-#View(vaginal_rel_df_matched) #1084 entries
-
 #DASS cleaning
-dass_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/DASS_0503_2024-final_df.csv")
-dass_df$mood_date <- as.Date(dass_df$Timestamp)
-dass_df$biome_id <- dass_df$study_id
-
-dass_df <- dass_df %>%
+dass_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/DASS_0503_2024-final_df.csv") %>%
   mutate(
+    mood_date = as.Date(Timestamp),
+    biome_id = study_id,
     stress_severity = case_when(
       stress_score >= 0  & stress_score <= 14 ~ 0,
       stress_score >= 15 & stress_score <= 18 ~ 1,
@@ -264,27 +259,39 @@ dass_df <- dass_df %>%
     )
   )
 
-vaginal_rel_df_matched$logDate <- as.Date(vaginal_rel_df_matched$logDate)
-
 dass_clean <- dass_df %>%
   select(biome_id, mood_date, stress_score, stress_severity) %>%
   distinct()
+
+vaginal_rel_df_matched$logDate <- as.Date(vaginal_rel_df_matched$logDate)
 
 closest_matches <- vaginal_rel_df_matched %>%
   inner_join(dass_clean, by = "biome_id") %>%
   mutate(date_diff = abs(as.numeric(difftime(logDate, mood_date, units = "days")))) %>%
   group_by(biome_id, logDate) %>%
-  slice_min(order_by = date_diff, with_ties = FALSE) %>%
+  slice_min(date_diff, with_ties = FALSE) %>%
   ungroup() %>%
   mutate(
-    stress_score = ifelse(date_diff <= 7, stress_score, NA)  # NA if >7 days
-    # do NOT change stress_severity – keep it even if score is NA
+    stress_score = ifelse(date_diff <= 7, stress_score, NA_real_),
+    stress_severity = ifelse(is.na(stress_score), NA_real_, stress_severity),
+    stress_severity_char = case_when(
+      is.na(stress_severity) ~ NA_character_,
+      stress_severity == 0 ~ "Normal",
+      stress_severity == 1 ~ "Mild",
+      stress_severity == 2 ~ "Moderate",
+      stress_severity == 3 ~ "Severe",
+      stress_severity == 4 ~ "Extremely Severe"
+    ),
+    stress_severity_char = factor(
+      stress_severity_char,
+      levels = c("Normal", "Mild", "Moderate", "Severe", "Extremely Severe")
+    )
   )
 
 vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
   left_join(
     closest_matches %>%
-      select(biome_id, logDate, mood_date, stress_score, stress_severity),
+      select(biome_id, logDate, stress_score, stress_severity, stress_severity_char),
     by = c("biome_id", "logDate")
   )
 
@@ -296,33 +303,74 @@ athlete_df <- dass_df %>%
 vaginal_rel_df_matched <- vaginal_rel_df_matched %>% 
   left_join(athlete_df, by = "biome_id")
 
-vaginal_rel_df_matched <- vaginal_rel_df_matched %>% 
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
   mutate(
     field_hockey = case_when(
-      sport == "In-Season" ~ "Field Hockey",  # samples taken during FH season
-      sport == "None"      ~ "None",          # non-athletes
-      TRUE                 ~ "Other"          # Club, Off-Season, Nordic Ski
+      is.na(sport)           ~ NA_character_,     # Preserve NA
+      sport == "In-Season"   ~ "Field Hockey",
+      sport == "None"        ~ "None",
+      TRUE                   ~ "Other"            # Club, Off-Season, Nordic Ski
     ),
     field_hockey = factor(field_hockey, levels = c("None", "Other", "Field Hockey"))
   )
 
-#View(vaginal_rel_df_matched) #1084 entries
+#climate cleaning
+weather_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/LCD_USW00094746_2022.csv") %>%
+  select(Date = DATE, 
+         DailyAverageDryBulbTemperature,
+         DailyAverageWetBulbTemperature,
+         DailyAverageDewPointTemperature,
+         DailyAverageRelativeHumidity,
+         DailyPrecipitation,
+         ) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Date >= as.Date("2022-10-13") & Date <= as.Date("2022-12-15")) %>%
+  distinct(Date, .keep_all = TRUE)
 
-#NA check
-na_samples <- vaginal_rel_df_matched %>% 
-  filter(is.na(sport))            
-na_samples #participant 31 has NA info
+weather_df <- weather_df %>%
+  rename(logDate = Date)
+
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
+  left_join(weather_df, by = "logDate")
+
+#menses cleaning 
+menses_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/imputed_menstruation_data_3_11.csv")
+menses_df <- menses_df %>% 
+  rename_with(~gsub("X2022.", "2022.", .), starts_with("X2022.")) %>% 
+  rename_with(~gsub("\\.", "-", .))
+
+menses_df_long <- menses_df %>% 
+  pivot_longer(cols=starts_with("2022-"), names_to="logDate", values_to="menses_status")
+menses_df_long$logDate <- as.Date(menses_df_long$logDate)
+
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>% 
+  left_join(menses_df_long, by=c("biome_id", "logDate"))
+
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>% 
+  mutate(menses_day = ifelse(menses_status %in% c(1,2,3,7,9,78), "menses", 
+                             ifelse(menses_status %in% c(4,5,6,10), "not_menses", NA)))
+
+#study day imputing
+all_days <- seq.Date(as.Date("2022-10-13"), as.Date("2022-12-16"), by = "day")
+vaginal_rel_df_matched$study_day <- match(as.Date(vaginal_rel_df_matched$logDate), all_days) - 1
+
+#quadratic day centering
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
+  mutate(day_c = scale(study_day, center = TRUE, scale = FALSE))
 
 ###################################################################################################################
 #DATA ANALYSIS -> C. ALBICANS RELATIVE ABUNDANCE AND LIFESTYLE FACTORS
 
 #C. albicans rel. abundance by HBC sina plot (w/ detection limit)
+candida_hbc_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(birthControl))
+
 hbc_cols <- c("None" = "#D73027", "Local P" = "#4575B4", "Systemic P only" = "#91CF60", "Systemic Combined (E&P)" = "#8073AC")
 
 box_width <- 0.75
 jitter_width <- box_width/2  
 
-p1 <- ggplot(vaginal_rel_df_matched,
+b_hbc <- ggplot(candida_hbc_filtered,
        aes(x = birthControl, y = CA_abund_limited)) +
   geom_sina(aes(color = birthControl),        
             size = 1.5, alpha = 0.7,
@@ -347,56 +395,50 @@ p1 <- ggplot(vaginal_rel_df_matched,
         axis.ticks.length = unit(3, "pt"),
         legend.position = "right")
 
+print(b_hbc)
+
 ###################################################################################################################
 
 #C. albicans rel. abundance over time by HBC (w/ detection limit)
-all_days <- seq.Date(as.Date("2022-10-13"), as.Date("2022-12-16"), by = "day")
-vaginal_rel_df_matched$study_day <- match(as.Date(vaginal_rel_df_matched$logDate), all_days) - 1
+x_breaks <- seq(0, max(vaginal_rel_df_matched$study_day, na.rm = TRUE), by = 5)
 
-p_hbc <- ggplot(vaginal_rel_df_matched, aes(x = study_day, y = CA_abund_limited, color = birthControl)) +
+p_hbc <- ggplot(candida_hbc_filtered, aes(study_day, CA_abund_limited, color = birthControl)) +
   geom_point(alpha = 0.4, size = 1) +
   geom_smooth(se = FALSE, method = "loess", size = 0.5) +
-  scale_color_manual(values = hbc_cols) +
-  labs(title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Birth Control Type (Detection Limit Applied)",
-       x = "Study Day",
-       y = "Relative Abundance of C. albicans",
-       color = "Birth Control") +
+  scale_color_manual(values = hbc_cols, name = "Birth Control") +
+  scale_y_continuous(name = "Relative Abundance of C. albicans", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
+  labs(
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Birth Control Type (Detection Limit Applied)"
+  ) +
   theme_minimal()
+
+print(p_hbc)
 
 ###################################################################################################################
 
 #C. albicans rel. abundance overtime by athlete status (w/ detection limit)
+candida_ath_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(athlete))
+
 athlete_cols <- c("0" = "#D36FA4", "1" = "#1A9850")
 
-p_ath <- ggplot(
-  vaginal_rel_df_matched,
-  aes(study_day, CA_abund_limited,
-      colour = factor(athlete, exclude = NULL))
-) +
-  geom_point(alpha = 0.40, size = 1) +
+p_ath <- ggplot(candida_ath_filtered, aes(study_day, CA_abund_limited, color = factor(athlete))) +
+  geom_point(alpha = 0.4, size = 1) +
   geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_colour_manual(
-    values  = athlete_cols,
-    breaks  = c("0", "1"),
-    labels  = c("Non-athlete", "Athlete"),
-    name    = "Athlete Status",
-    na.translate = TRUE,
-    na.value     = na_col
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
+  scale_color_manual(values = athlete_cols, breaks = c("0", "1"),
+                     labels = c("Non-athlete", "Athlete"),
+                     name = "Athlete Status") +
+  scale_y_continuous(name = "Relative Abundance of C. albicans", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
   labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Athlete Status (Detection Limit Applied)",
-    x     = "Study Day",
-    y     = "Relative Abundance of C. albicans"
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Athlete Status (Detection Limit Applied)"
   ) +
   theme_minimal()
 
 print(p_ath)
 
 #C. albicans rel. abundance and athlete mixed effect quadratic model
-vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
-  mutate(day_c = scale(study_day, center = TRUE, scale = FALSE))
-
 m_rel_athlete_quad <- lmer(CA_abund_limited ~ athlete + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
 summary(m_rel_athlete_quad)
 r2(m_rel_athlete_quad)
@@ -404,79 +446,265 @@ r2(m_rel_athlete_quad)
 ###################################################################################################################
 
 #C. albicans rel. abundance overtime by sports category (w/ detection limit)
-vaginal_rel_df_matched <- vaginal_rel_df_matched %>% 
-  mutate(sport = factor(sport, levels = c(NA, "None", "Club", "In-Season", "Off-Season", "Nordic Ski")))
+candida_sport_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(sport))
 
 sports_cols <- c("None" = "#B0B0B0", "Club" = "#795548", "Off-Season" = "#FB8072", "In-Season" = "#8DD3C7", "Nordic Ski"  = "#80B1D3")
 
-ggplot(vaginal_rel_df_matched,
-       aes(x = study_day, y = CA_abund_limited, colour = sport)) +
-  geom_point(size = 1, alpha = 0.55) +
+p_sport <- ggplot(candida_sport_filtered, aes(study_day, CA_abund_limited, color = sport)) +
+  geom_point(alpha = 0.55, size = 1) +
   geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_color_manual(values = sports_cols,
-                     name = "Sport Category") +
-  scale_y_continuous(limits = c(0, 1)) +         
+  scale_color_manual(values = sports_cols, name = "Sport Category") +
+  scale_y_continuous(name = "Relative Abundance of C. albicans", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
   labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Sport Category (Detection Limit Applied)",
-    x = "Study Day",
-    y = "Relative Abundance of C. albicans"        
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Sport Category (Detection Limit Applied)"
   ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor   = element_blank(),
-    panel.grid.major.y = element_line(colour = "grey90", size = 0.5),
-    legend.position    = "right"
-  )
+  theme_minimal()
+
+print(p_sport)
 
 ###################################################################################################################
 
 #C. albicans rel. abundance overtime by field hockey category (w/ detection limit)
+candida_fh_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(field_hockey))
+
 fh_cols <- c("None" = "#B0B0B0", "Other" = "#FDD95E", "Field Hockey" = "#8DD3C7")
 
-p_fh <- ggplot(
-  vaginal_rel_df_matched,
-  aes(study_day, CA_abund_limited, colour = field_hockey)
-) +
-  geom_point(alpha = 0.40, size = 1) +
+p_fh <- ggplot(candida_fh_filtered, aes(study_day, CA_abund_limited, color = field_hockey)) +
+  geom_point(alpha = 0.4, size = 1) +
   geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_colour_manual(
-    values = fh_cols,
-    name   = "Sport Group"
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
+  scale_color_manual(values = fh_cols, name = "Sport Group") +
+  scale_y_continuous(name = "Relative Abundance of C. albicans", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
   labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time\nNone vs. Other Sports vs. Field Hockey (Detection Limit Applied)",
-    x     = "Study Day",
-    y     = "Relative Abundance of C. albicans"
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time\nNone vs. Other Sports vs. Field Hockey (Detection Limit Applied)"
   ) +
   theme_minimal()
 
 print(p_fh)
 
 #C. albicans rel. abundance and field hockey mixed effect quadratic model
-m_rel_FH_quad <- lmer(CA_abund_limited ~ field_hockey + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
-summary(m_rel_FH_quad)
-r2(m_rel_FH_quad)
+m_rel_fh_quad <- lmer(CA_abund_limited ~ field_hockey + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
+summary(m_rel_fh_quad)
+r2(m_rel_fh_quad)
+
+###################################################################################################################
+
+#field hockey players analysis
+games_df <- data.frame(
+  game_date = as.Date(c("2022-10-15", "2022-10-18", "2022-10-22", "2022-10-29", "2022-11-01")), 
+  W = c(0, 0, 1, 0, 0),
+  home = c(1, 0, 0, 1, 0),
+  score_diff = c(-4, -1, +1, -1, -2)
+)
+
+games_df <- games_df %>%
+  arrange(game_date) %>%
+  mutate(
+    game_number = row_number(),
+    result = ifelse(W == 1, "W", "L")
+    )
+
+fh_df <- vaginal_rel_df_matched %>%
+  filter(field_hockey == "Field Hockey") %>%
+  mutate(sample_date = as.Date(logDate)) %>%
+  left_join(games_df, by = c("sample_date" = "game_date")) %>%
+  mutate(
+    is_game_day = !is.na(W),
+    label_text = ifelse(is_game_day, paste0("Day ", study_day), NA),
+    biome_id = factor(biome_id)
+  )
+
+View(fh_df)
+
+ggplot(fh_df, aes(x = study_day, y = CA_abund_limited, group = biome_id, color = biome_id)) +
+  geom_smooth(se = FALSE, method = "loess", size = 0.5) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_text_repel(
+    data = fh_df %>% filter(is_game_day),
+    aes(label = label_text),
+    size = 3,
+    show.legend = FALSE,
+    max.overlaps = 50,
+    segment.color = "grey60",
+    box.padding = 0.4,
+    point.padding = 0.3
+  ) +
+  scale_y_continuous(name = "C. albicans Relative Abundance", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
+  labs(
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance in Field Hockey Players Over Time (Detection Limit Applied)",
+    subtitle = "Game Days Labeled by Study Day",
+    color = "Participant ID"
+  ) +
+  theme_minimal()
+
+###################################################################################################################
+
+#C. albicans rel. abundance over time by menstruation status (w/ detection limit)
+candida_menses_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(menses_day))
+
+menses_cols <- c("menses" = "orange", "not_menses" = "brown")
+
+p_menses <- ggplot(candida_menses_filtered, aes(study_day, CA_abund_limited, color = menses_day)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.5) +
+  scale_color_manual(values = menses_cols,
+                     labels = c("menses" = "Menstruating", "not_menses" = "Not Menstruating"),
+                     name = "Menstruation Status") +
+  scale_y_continuous(name = "Relative Abundance of C. albicans", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
+  labs(
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Menstruation Status (Detection Limit Applied)"
+  ) +
+  theme_minimal()
+
+print(p_menses)
+
+#C. albicans rel. abundance and menstruation mixed effect quadratic model
+m_rel_men_quad <- lmer(CA_abund_limited ~ menses_day + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
+summary(m_rel_men_quad)
+r2(m_rel_men_quad)
+
+###################################################################################################################
+
+#C. albicans rel. abundance over time by stress severity (w/ detection limit)
+candida_stress_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(stress_severity_char))
+
+stress_severity_cols <- c("Normal" = "#F3E5F5", "Mild" = "#CE93D8", "Moderate" = "#AB47BC", "Severe" = "#6A1B9A", "Extremely Severe" = "#4A0072")
+
+p_stress <- ggplot(candida_stress_filtered, aes(study_day, CA_abund_limited, color = stress_severity_char)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.5) +
+  scale_color_manual(values = stress_severity_cols, 
+                     name = "Stress Severity") +
+  scale_y_continuous(name = "Relative Abundance", limits = c(0, 1)) +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
+  labs(
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Stress Severity (Detection Limit Applied)"
+  ) +
+  theme_minimal()
+
+print(p_stress)
 
 ###################################################################################################################
 
 #comparison
-combined_panel <- (p_hbc / p_ath / p_fh) +
-  plot_layout(guides = "keep")  # each keeps its own legend
+p_hbc_clean <- p_hbc + scale_y_continuous(name = "Relative Abundance") + labs(title = NULL) + ggtitle("Hormonal Birth Control")
+p_ath_clean <- p_ath + scale_y_continuous(name = "Relative Abundance") + labs(title = NULL) + ggtitle("Athlete Status")
+p_fh_clean <- p_fh + scale_y_continuous(name = "Relative Abundance") + labs(title = NULL) + ggtitle("Type of Sports")
+p_menses_clean <- p_menses  + scale_y_continuous(name = "Relative Abundance") + labs(title = NULL) + ggtitle("Menstruation Status")
+
+combined_panel <- (p_hbc_clean / p_ath_clean / p_fh_clean / p_menses_clean) +
+  plot_layout(guides = "keep") +
+  plot_annotation(
+    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Different Lifestyle Factors (Detection Limit Applied)",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+    )
+  )
+
 combined_panel
 
 ###################################################################################################################
 
-#C. albicans rel. abundance and stress correlation
-ggplot(vaginal_rel_df_matched, aes(stress_score, CA_abund_limited)) +
-  geom_point(alpha = .35, size = 1) +
-  geom_smooth(method = "loess", se = TRUE, colour = "black") +
-  labs(x = "Stress score", y = "C. albicans relative abundance") +
-  theme_minimal(base_size = 14)
+#C. albicans rel. abundance and climate conditions (dry bulb, wet bulb, dew point, and relative humidity)
 
-cor.test(vaginal_rel_df_matched$stress_score, vaginal_rel_df_matched$CA_abund_limited,  method = "spearman")
-cor.test(vaginal_rel_df_matched$stress_score, vaginal_rel_df_matched$CA_abund_limited,  method = "pearson")
+cor.test(vaginal_rel_df_matched$CA_abund_limited, vaginal_rel_df_matched$DailyAverageDryBulbTemperature, method = "spearman")
+cor.test(vaginal_rel_df_matched$CA_abund_limited, vaginal_rel_df_matched$DailyAverageWetBulbTemperature, method = "spearman")
+cor.test(vaginal_rel_df_matched$CA_abund_limited, vaginal_rel_df_matched$DailyAverageDewPointTemperature, method = "spearman")
+cor.test(vaginal_rel_df_matched$CA_abund_limited, vaginal_rel_df_matched$DailyAverageRelativeHumidity, method = "spearman")
+
+common_theme <- theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major = element_line(color = "grey90"),
+        panel.grid.minor = element_blank())
+
+smooth_layer <- geom_smooth(method = "loess", color = "blue", se = FALSE, size = 0.5)
+point_layer <- geom_point(alpha = 0.6, size = 1)
+
+c1 <- ggplot(vaginal_rel_df_matched, aes(x = DailyAverageDryBulbTemperature, y = CA_abund_limited)) +
+  point_layer +
+  smooth_layer +
+  labs(
+    title = "Dry Bulb Temperature   (Spearman = -0.144, p < 0.001)",
+    x = "Daily Average Temperature (°C)",
+    y = "C. albicans Relative Abundance"
+  ) + common_theme
+
+c2 <- ggplot(vaginal_rel_df_matched, aes(x = DailyAverageWetBulbTemperature, y = CA_abund_limited)) +
+  point_layer +
+  smooth_layer +
+  labs(
+    title = "Wet Bulb Temperature   (Spearman = -0.174, p < 0.001)",
+    x = "Daily Average Temperature (°C)",
+    y = "C. albicans Relative Abundance"
+  ) + common_theme
+
+c3 <- ggplot(vaginal_rel_df_matched, aes(x = DailyAverageDewPointTemperature, y = CA_abund_limited)) +
+  point_layer +
+  smooth_layer +
+  labs(
+    title = "Dew Point Temperature   (Spearman = -0.173, p < 0.001)",
+    x = "Daily Average Temperature (°C)",
+    y = "C. albicans Relative Abundance"
+  ) + common_theme
+
+c4 <- ggplot(vaginal_rel_df_matched, aes(x = DailyAverageRelativeHumidity, y = CA_abund_limited)) +
+  point_layer +
+  smooth_layer +
+  labs(
+    title = "Relative Humidity   (Spearman = -0.145, p = 0.001)",
+    x = "Daily Average Relative Humidity",
+    y = "C. albicans Relative Abundance"
+  ) + common_theme
+
+(c1 | c2) / (c3 | c4)
+
+p2 <- ggplot(vaginal_rel_df_matched, aes(x = logDate, y = DailyAverageRelativeHumidity)) +
+  geom_line(color = "grey") +
+  labs(y = "Relative Humidity") +
+  theme_minimal()
+
+p3 <- ggplot(vaginal_rel_df_matched, aes(x = logDate, y = DailyAverageRelativeHumidity)) +
+  geom_smooth(se = FALSE, color = "firebrick") +
+  labs(y = "Relative Humidity") +
+  theme_minimal()
+
+p4 <- ggplot(vaginal_rel_df_matched, aes(x = logDate, y = CA_abund_limited)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(y = "Relative abundance of C. albicans") +
+  theme_minimal()
+
+p2 / p3 / p4
+
+#variable selection
+m_cli_var <- lmer(CA_abund_limited ~ DailyAverageRelativeHumidity + DailyAverageDryBulbTemperature + DailyAverageWetBulbTemperature + DailyAverageDewPointTemperature + day_c + I(day_c^2) + (1 | biome_id), data = vaginal_rel_df_matched)
+options(na.action = "na.fail")  
+best_cli_var <- dredge(m_cli_var)
+get.models(best_cli_var, 1)[[1]] #dredge() says dry bulb and wet bulb are the best predictors
+
+###################################################################################################################
+
+#overall model (selected by dredge())
+complete_data <- vaginal_rel_df_matched %>%
+  select(CA_abund_limited, DailyAverageRelativeHumidity, DailyAverageDryBulbTemperature,
+         DailyAverageWetBulbTemperature, DailyAverageDewPointTemperature, birthControl,
+         field_hockey, stress_score, menses_day, day_c, biome_id) %>%
+  drop_na()
+
+m_all <- lmer(CA_abund_limited ~ DailyAverageRelativeHumidity + DailyAverageDryBulbTemperature + DailyAverageWetBulbTemperature + DailyAverageDewPointTemperature + birthControl + field_hockey + stress_score + menses_day + day_c + I(day_c^2) + (1 | biome_id), data = complete_data)
+summary(m_all)
+r2(m_all)
+
+options(na.action = "na.fail")  
+model_set <- dredge(m_all, trace = TRUE)
+get.models(model_set, 1)[[1]]
 
 ###################################################################################################################
 
@@ -576,10 +804,10 @@ ggplot(comp_data, aes(x = study_day, y = CA_abund, color = birthControl)) +
         legend.position = "right")
 
 ###################################################################################################################
-#DATA ANALYSIS -> SHANNON DIVERSITY
+#DATA ANALYSIS -> SHANNON DIVERSITY AND LIFESTYLE FACTORS
 
 #Shannon and HBC violin plot
-ggplot(vaginal_rel_df_matched, aes(x = birthControl, y = Shannon)) +
+b_shannon_hbc <- ggplot(candida_hbc_filtered, aes(x = birthControl, y = Shannon)) +
   geom_sina(aes(color = birthControl),
             size = 1.5, alpha = 0.7,
             maxwidth = box_width * 0.4,
@@ -603,39 +831,43 @@ ggplot(vaginal_rel_df_matched, aes(x = birthControl, y = Shannon)) +
         axis.ticks.length = unit(3, "pt"),
         legend.position = "right")
 
+print(b_shannon_hbc)
+
 ###################################################################################################################
 
 #Shannon over time by HBC
-ggplot(vaginal_rel_df_matched, aes(x = study_day, y = Shannon, color = birthControl)) +
-  geom_point(alpha = 0.4, size = 1) +
+p_shannon_hbc <- ggplot(candida_hbc_filtered, aes(x = study_day, y = Shannon, color = birthControl)) +
+  geom_point(alpha = 0.3, size = 1) +
   geom_smooth(se = FALSE, method = "loess", size = 0.5) +
   scale_color_manual(values = hbc_cols) +
   labs(title = "Vaginal Mycobiome: Shannon Diversity Over Time by Birth Control Type",
        x = "Study Day",
        y = "Shannon Diversity",
        color = "Birth Control") +
-  theme_minimal() #spline reveals a linear mixed effect model seems appropriate
+  theme_minimal() 
+
+print(p_shannon_hbc)
 
 #Shannon and HBC mixed effect model 
-m_shannon_HBC_time <- lmer(Shannon ~ birthControl + study_day + (1 | biome_id), data = vaginal_rel_df_matched)
+m_shannon_HBC_time <- lmer(Shannon ~ birthControl + study_day + (1 | biome_id), na.action = na.omit, data = vaginal_rel_df_matched)
 summary(m_shannon_HBC_time)
 r2(m_shannon_HBC_time)
 
 ###################################################################################################################
 
 #average Shannon by HBC boxplot
-vaginal_avg_shannon_df <- vaginal_rel_df_matched %>%
+vaginal_avg_shannon_hbc_df <- candida_hbc_filtered %>%
   group_by(biome_id, birthControl) %>%
   summarise(
-    n_samples    = n(),
+    n_samples = n(),
     Mean_Shannon = mean(Shannon, na.rm = TRUE),
-    SD_Shannon   = sd(Shannon,   na.rm = TRUE),
-    Min_Shannon  = min(Shannon,  na.rm = TRUE),
-    Max_Shannon  = max(Shannon,  na.rm = TRUE)
+    SD_Shannon = sd(Shannon, na.rm = TRUE),
+    Min_Shannon = min(Shannon, na.rm = TRUE),
+    Max_Shannon = max(Shannon, na.rm = TRUE)
   ) %>%
   ungroup()
 
-ggplot(vaginal_avg_shannon_df, aes(x = birthControl, y = Mean_Shannon)) +
+b_avg_shannon_hbc <- ggplot(vaginal_avg_shannon_hbc_df, aes(x = birthControl, y = Mean_Shannon)) +
   geom_sina(aes(color = factor(biome_id)), size = 1.5, alpha = 0.7, maxwidth = box_width * 0.4, show.legend = FALSE) +
   geom_violin(aes(fill = birthControl), color = "black", size = 0.3, alpha = 0.4, width = box_width) +
   geom_boxplot(width = 0.1, outlier.shape = NA, color = "black", size = 0.5) +
@@ -657,12 +889,126 @@ ggplot(vaginal_avg_shannon_df, aes(x = birthControl, y = Mean_Shannon)) +
     legend.position = "right"
   )
 
-#avg Shannon diversity and HBC linear model
-m_avg_shannon_hbc <- lm(Mean_Shannon ~ birthControl, data = vaginal_avg_shannon_df)
+print(b_avg_shannon_hbc)
+
+#avg Shannon and HBC linear model
+m_avg_shannon_hbc <- lm(Mean_Shannon ~ birthControl, data = vaginal_avg_shannon_hbc_df)
 summary(m_avg_shannon_hbc)
 
 ###################################################################################################################
-#DATA ANALYSIS -> SHANNON, DOMINANT SPECIES, AND HBC
+
+#Shannon by menstruation status violin plot
+b_shannon_menses <- ggplot(candida_menses_filtered, aes(x = menses_day, y = Shannon)) +
+  geom_sina(aes(color = menses_day), size = 1.5, alpha = 0.7,
+            maxwidth = box_width * 0.4, show.legend = FALSE) +
+  geom_violin(aes(fill = menses_day), color = "black", size = 0.3,
+              alpha = 0.3, width = box_width) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, color = "black", size = 0.5) +
+  scale_fill_manual(
+    values = menses_cols,
+    labels = c("menses" = "Menstruating", "not_menses" = "Not Menstruating"),
+    name = "Menstruation Status"
+  ) +
+  scale_color_manual(
+    values = menses_cols,
+    guide = "none"
+  ) +
+  scale_x_discrete(
+    name = "Menstruation Status",
+    labels = c("menses" = "Menstruating", "not_menses" = "Not Menstruating")
+  ) +
+  scale_y_continuous(name = "Shannon Diversity") +
+  labs(title = "Vaginal Mycobiome: Shannon Diversity by Menstruation Status") +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90", size = 0.5),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.ticks.length = unit(3, "pt")
+  )
+
+print(b_shannon_menses)
+
+###################################################################################################################
+
+#Shannon over time by menstruation status
+p_shannon_menses <- ggplot(candida_menses_filtered, aes(study_day, Shannon, color = menses_day)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.5) +
+  scale_color_manual(values = menses_cols,
+                     labels = c("menses" = "Menstruating", "not_menses" = "Not Menstruating"),
+                     name = "Menstruation Status") +
+  scale_y_continuous(name = "Shannon Diversity") +
+  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
+  labs(
+    title = "Vaginal Mycobiome: Shannon Diversity Over Time by Menstruation Status"
+  ) +
+  theme_minimal()
+
+print(p_shannon_menses)
+
+###################################################################################################################
+
+#avg Shannon by menstruation status test
+vaginal_avg_shannon_menses_df <- candida_menses_filtered %>%
+  filter(!is.na(Shannon)) %>%
+  group_by(biome_id, menses_day) %>%
+  summarise(
+    Mean_Shannon = mean(Shannon),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = menses_day,
+    values_from = Mean_Shannon,
+    names_prefix = "Shannon_"
+  ) %>%
+  filter(!is.na(Shannon_menses), !is.na(Shannon_not_menses))
+
+wilcox.test(vaginal_avg_shannon_menses_df$Shannon_menses, vaginal_avg_shannon_menses_df$Shannon_not_menses, paired = TRUE)
+
+###################################################################################################################
+
+#Shannon by HBC and menses boxplot
+clean_df <- vaginal_rel_df_matched %>%
+  filter(!is.na(Shannon), !is.na(birthControl), !is.na(menses_day)) %>%
+  mutate(
+    menses_day = factor(menses_day, levels = c("not_menses", "menses"),
+                        labels = c("Not Menstruating", "Menstruating"))
+  )
+
+ggplot(clean_df, aes(x = birthControl, y = Shannon, fill = menses_day)) +
+  geom_violin(position = position_dodge(width = 0.8),
+              color = "black", alpha = 0.3, width = 0.7) +
+  geom_boxplot(position = position_dodge(width = 0.8),
+               width = 0.2, outlier.shape = NA, color = "black", alpha = 0.6) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8),
+    size = 1.2, alpha = 0.5, shape = 21, color = "black"
+  ) +
+  scale_fill_manual(values = menses_cols, name = "Menstruation Status") +
+  labs(
+    title = "Vaginal Mycobiome: Shannon Diversity by Birth Control and Menstruation",
+    x = "Birth Control",
+    y = "Shannon Diversity"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    axis.ticks.length = unit(3, "pt")
+  )
+###################################################################################################################
+
+#Shannon by HBC and menses lienar mixed effect model
+m_shannon_hbc_menses <- lmer(Shannon ~ menses_day + birthControl + study_day + (1 | biome_id), na.action = na.omit, data = vaginal_rel_df_matched)
+summary(m_shannon_hbc_menses)
+r2(m_shannon_hbc_menses)
+
+###################################################################################################################
+
+#DATA ANALYSIS -> SHANNON & DOMINANT SPECIES
 
 #filter top 3 most frequent dominant species (at sample-level)
 top3 <- vaginal_rel_df_matched %>%
@@ -684,11 +1030,11 @@ vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
     )
   )
 
-species_cols <- c(setNames(c("#D95F02", "#1B9E77", "#E7298A"), top3),  "Other" = "#7570B3", "Unknown" = "#666666")
-
 ###################################################################################################################
 
 #Shannon by dominant species boxplot
+species_cols <- c(setNames(c("#D95F02", "#1B9E77", "#E7298A"), top3),  "Other" = "#7570B3", "Unknown" = "#666666")
+
 ggplot(vaginal_rel_df_matched,              
        aes(x = DomSpec_grp, y = Shannon, fill = DomSpec_grp)) +
   geom_boxplot(outlier.shape = NA, width = 0.55,
@@ -702,14 +1048,7 @@ ggplot(vaginal_rel_df_matched,
     x     = "Dominant Species",
     y     = "Shannon Diversity"
   ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    axis.text.x        = element_text(angle = 0, hjust = 0.5, size = 9),
-    panel.grid.major.x = element_blank(),
-    legend.title       = element_text(size = 10),
-    legend.text        = element_text(size = 9),
-    legend.key.size    = unit(0.4, "cm")
-  )
+  theme_minimal()
 
 ###################################################################################################################
 
@@ -721,8 +1060,7 @@ ggplot(vaginal_rel_df_matched,
   scale_colour_manual(values = species_cols, name = "Dominant Species") +
   labs(title = "Vaginal Mycobiome: Shannon Diversity Over Time",
        x = "Study Day", y = "Shannon Diversity") +
-  theme_minimal(base_size = 13) +
-  theme(panel.grid.major.x = element_blank())
+  theme_minimal()
 
 #Shannon diversity and dominant species mixed effect model
 m_shannon_dom_time <- lmer(Shannon ~ DomSpec_grp + study_day + (1 | biome_id), data = vaginal_rel_df_matched)
@@ -786,5 +1124,20 @@ r2(m_shannon_dom_hbc_int_time)
 
 ###################################################################################################################
 
+#transitions
+dominant_species_transitions <- vaginal_rel_df_matched %>%
+  group_by(biome_id, study_day) %>%
+  summarise(dom = first(DominantSpecies), .groups = "drop") %>%
+  arrange(biome_id, study_day) %>%
+  group_by(biome_id) %>%
+  mutate(switch = dom != lag(dom, default = first(dom))) %>%
+  summarise(
+    n_switches = sum(switch),
+    n_timepoints = n(),
+    first_dom = first(dom),
+    final_dom = last(dom),
+    .groups = "drop"
+  )
 
+View(dominant_species_transitions)
 
