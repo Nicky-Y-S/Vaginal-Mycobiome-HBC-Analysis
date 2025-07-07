@@ -330,7 +330,7 @@ hbc_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/cleaned_Report 9-Voluntee
 
 vaginal_rel_df_matched <- vaginal_rel_metadata_df %>%
   left_join(
-    hbc_df %>% select(biome_id, birthControl, taken_antibiotics),
+    hbc_df %>% select(biome_id, birthControl),
     by = "biome_id"
   )
 
@@ -347,53 +347,36 @@ vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
   left_join(ssri_summary, by = "biome_id")
 
 #DASS cleaning
-dass_df <- read.csv("/Users/yiningsun/Desktop/Tetel Lab/DASS_0503_2024-final_df.csv") %>%
+dass_df <- read.csv("cleaned_dass.csv") %>%
   mutate(
     mood_date = as.Date(Timestamp),
-    biome_id = study_id,
-    stress_severity = case_when(
-      stress_score >= 0  & stress_score <= 14 ~ 0,
-      stress_score >= 15 & stress_score <= 18 ~ 1,
-      stress_score >= 19 & stress_score <= 25 ~ 2,
-      stress_score >= 26 & stress_score <= 33 ~ 3,
-      stress_score >= 34                      ~ 4,
-      TRUE ~ NA_real_
-    )
+    biome_id = as.integer(biome_id)
   )
 
 dass_clean <- dass_df %>%
-  select(biome_id, mood_date, stress_score, stress_severity) %>%
+  select(biome_id, mood_date,
+         depression_score, anxiety_score, stress_score,
+         depressionseverity, anxietyseverity, stressseverity) %>%
   distinct()
 
 vaginal_rel_df_matched$logDate <- as.Date(vaginal_rel_df_matched$logDate)
 
-closest_matches <- vaginal_rel_df_matched %>%
+closest_dass <- vaginal_rel_df_matched %>%
   inner_join(dass_clean, by = "biome_id") %>%
   mutate(date_diff = abs(as.numeric(difftime(logDate, mood_date, units = "days")))) %>%
   group_by(biome_id, logDate) %>%
   slice_min(date_diff, with_ties = FALSE) %>%
   ungroup() %>%
-  mutate(
-    stress_score = ifelse(date_diff <= 7, stress_score, NA_real_),
-    stress_severity = ifelse(is.na(stress_score), NA_real_, stress_severity),
-    stress_severity_char = case_when(
-      is.na(stress_severity) ~ NA_character_,
-      stress_severity == 0 ~ "Normal",
-      stress_severity == 1 ~ "Mild",
-      stress_severity == 2 ~ "Moderate",
-      stress_severity == 3 ~ "Severe",
-      stress_severity == 4 ~ "Extremely Severe"
-    ),
-    stress_severity_char = factor(
-      stress_severity_char,
-      levels = c("Normal", "Mild", "Moderate", "Severe", "Extremely Severe")
-    )
-  )
+  mutate(across(c(depression_score, anxiety_score, stress_score,
+                  depressionseverity, anxietyseverity, stressseverity),
+                ~ ifelse(date_diff <= 7, ., NA)))
 
 vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
   left_join(
-    closest_matches %>%
-      select(biome_id, logDate, stress_score, stress_severity, stress_severity_char),
+    closest_dass %>%
+      select(biome_id, logDate,
+             depression_score, anxiety_score, stress_score,
+             depressionseverity, anxietyseverity, stressseverity),
     by = c("biome_id", "logDate")
   )
 
@@ -489,15 +472,9 @@ b_hbc <- ggplot(candida_hbc_filtered,
   scale_fill_manual(name = "Birth Control",
                     values = hbc_cols) +
   scale_color_manual(values = hbc_cols, guide = "none") +
-  theme_minimal(base_size = 14) +
+  theme_minimal() +
   labs(title = "Vaginal Mycobiome: C. albicans Relative Abundance by Birth Control Type (Detection Limit Applied)",
-       x = "Birth Control", y = "Relative Abundance of C. albicans") +
-  theme(panel.grid.major.x = element_blank(),
-        panel.grid.minor = element_blank(),
-        panel.grid.major.y = element_line(color = "grey90", size = 0.5),
-        axis.text.x = element_text(angle = 0, hjust = 0.5),
-        axis.ticks.length = unit(3, "pt"),
-        legend.position = "right")
+       x = "Birth Control", y = "Relative Abundance of C. albicans")
 
 print(b_hbc)
 
@@ -710,25 +687,81 @@ ggplot(abund_means_ssri, aes(x = mean_not_menses, y = mean_menses, color = ssri_
 
 ###################################################################################################################
 
-#C. albicans rel. abundance over time by stress severity
+#DASS and c. albicans 
+vaginal_rel_df_matched <- vaginal_rel_df_matched %>%
+  mutate(
+    stress_severity_label = factor(
+      case_when(
+        stressseverity == 0 ~ "Normal",
+        stressseverity == 1 ~ "Mild",
+        stressseverity == 2 ~ "Moderate",
+        stressseverity == 3 ~ "Severe",
+        stressseverity == 4 ~ "Extremely Severe"
+      ),
+      levels = c("Normal", "Mild", "Moderate", "Severe", "Extremely Severe")
+    ),
+    depression_severity_label = factor(
+      case_when(
+        depressionseverity == 0 ~ "Normal",
+        depressionseverity == 1 ~ "Mild",
+        depressionseverity == 2 ~ "Moderate",
+        depressionseverity == 3 ~ "Severe",
+        depressionseverity == 4 ~ "Extremely Severe"
+      ),
+      levels = c("Normal", "Mild", "Moderate", "Severe", "Extremely Severe")
+    ),
+    anxiety_severity_label = factor(
+      case_when(
+        anxietyseverity == 0 ~ "Normal",
+        anxietyseverity == 1 ~ "Mild",
+        anxietyseverity == 2 ~ "Moderate",
+        anxietyseverity == 3 ~ "Severe",
+        anxietyseverity == 4 ~ "Extremely Severe"
+      ),
+      levels = c("Normal", "Mild", "Moderate", "Severe", "Extremely Severe")
+    )
+  )
+
+#C. albicans rel. abundance by stress severity box plot
+stress_candida_filtered <- vaginal_rel_df_matched %>%
+  filter(!is.na(stress_score))
+
+stress_severity_colors <- c(
+  "Normal" = "#A6CEE3",
+  "Mild" = "#7FB8D1",
+  "Moderate" = "#56A0C6",
+  "Severe" = "#2C7BB6",
+  "Extremely Severe" = "#1F78B4"
+)
+
+ggplot(candida_stress_filtered,
+       aes(x = stress_severity_label, y = CA_abund_limited)) +
+  geom_violin(aes(fill = stress_severity_label),
+              color = "black", size = 0.3,
+              alpha = 0.4, width = box_width) +
+  geom_boxplot(width = 0.1, outlier.shape = NA,
+               color = "black", size = 0.5) +
+  geom_sina(aes(color = stress_severity_label),
+            size = 1.5, alpha = 0.7,
+            maxwidth = box_width * 0.4,
+            show.legend = FALSE) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_fill_manual(name = "Stress Severity", values = stress_severity_colors) +
+  scale_color_manual(values = stress_severity_colors, guide = "none") +
+  theme_minimal() +
+  labs(title = "Vaginal Mycobiome: C. albicans Relative Abundance by Stress Severity",
+       x = "Stress Severity", y = "Relative Abundance of C. albicans")
+
+#C. albicans rel. abundance by depression severity box plot
+depression_colors <- scale_fill_gradient(low = "#B2DF8A", high = "#33A02C", name = "C. albicans")
+
+#C. albicans rel. abundance by anxiety severity box plot 
+anxiety_colors <- scale_fill_gradient(low = "#FDBF6F", high = "#E31A1C", name = "C. albicans")
+
 candida_stress_filtered <- vaginal_rel_df_matched %>%
   filter(!is.na(stress_severity_char))
 
-stress_severity_cols <- c("Normal" = "#F3E5F5", "Mild" = "#CE93D8", "Moderate" = "#AB47BC", "Severe" = "#6A1B9A", "Extremely Severe" = "#4A0072")
 
-p_stress <- ggplot(candida_stress_filtered, aes(study_day, CA_abund_limited, color = stress_severity_char)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "loess", se = FALSE, size = 0.5) +
-  scale_color_manual(values = stress_severity_cols, 
-                     name = "Stress Severity") +
-  scale_y_continuous(name = "Relative Abundance", limits = c(0, 1)) +
-  scale_x_continuous(name = "Study Day", breaks = x_breaks) +
-  labs(
-    title = "Vaginal Mycobiome: C. albicans Relative Abundance Over Time by Stress Severity (Detection Limit Applied)"
-  ) +
-  theme_minimal()
-
-print(p_stress)
 
 ###################################################################################################################
 
